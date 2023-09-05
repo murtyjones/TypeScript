@@ -5,6 +5,7 @@ import chalk from "chalk";
 import chokidar from "chokidar";
 import esbuild from "esbuild";
 import { EventEmitter } from "events";
+import { copy } from 'esbuild-plugin-copy';
 import fs from "fs";
 import { glob } from "glob";
 import { task } from "hereby";
@@ -32,6 +33,59 @@ import {
     readJson,
     rimraf,
 } from "./scripts/build/utils.mjs";
+
+const wasmPlugin = {
+    name: 'wasm',
+    setup(build) {
+      // Resolve ".wasm" files to a path with a namespace
+      build.onResolve({ filter: /\.wasm$/ }, args => {
+        // If this is the import inside the stub module, import the
+        // binary itself. Put the path in the "wasm-binary" namespace
+        // to tell our binary load callback to load the binary file.
+        if (args.namespace === 'wasm-stub') {
+          return {
+            path: args.path,
+            namespace: 'wasm-binary',
+          }
+        }
+  
+        // Otherwise, generate the JavaScript stub module for this
+        // ".wasm" file. Put it in the "wasm-stub" namespace to tell
+        // our stub load callback to fill it with JavaScript.
+        //
+        // Resolve relative paths to absolute paths here since this
+        // resolve callback is given "resolveDir", the directory to
+        // resolve imports against.
+        if (args.resolveDir === '') {
+          return // Ignore unresolvable paths
+        }
+        return {
+          path: path.isAbsolute(args.path) ? args.path : path.join(args.resolveDir, args.path),
+          namespace: 'wasm-stub',
+        }
+      })
+  
+      // Virtual modules in the "wasm-stub" namespace are filled with
+      // the JavaScript code for compiling the WebAssembly binary. The
+      // binary itself is imported from a second virtual module.
+      build.onLoad({ filter: /.*/, namespace: 'wasm-stub' }, async (args) => ({
+        contents: `import wasm from ${JSON.stringify(args.path)}
+          export default (imports) =>
+            WebAssembly.instantiate(wasm, imports).then(
+              result => result.instance.exports)`,
+      }))
+  
+      // Virtual modules in the "wasm-binary" namespace contain the
+      // actual bytes of the WebAssembly file. This uses esbuild's
+      // built-in "binary" loader instead of manually embedding the
+      // binary data inside JavaScript code ourselves.
+      build.onLoad({ filter: /.*/, namespace: 'wasm-binary' }, async (args) => ({
+        contents: await fs.promises.readFile(args.path),
+        loader: 'binary',
+      }))
+    },
+}
+
 
 /** @typedef {ReturnType<typeof task>} Task */
 void 0;
@@ -194,8 +248,21 @@ function createBundler(entrypoint, outfile, taskOptions = {}) {
             sourcemap: "linked",
             sourcesContent: false,
             treeShaking: taskOptions.treeShaking,
-            packages: "external",
+            // packages: "external",
             logLevel: "warning",
+            plugins: [
+                copy({
+                    // this is equal to process.cwd(), which means we use cwd path as base path to resolve `to` path
+                    // if not specified, this plugin uses ESBuild.build outdir/outfile options as base path.
+                    resolveFrom: 'cwd',
+                    assets: {
+                      from: ['../rtsc/pkg/rtsc_bg.wasm'],
+                      to: ['./built/local'],
+                    },
+                    watch: true,
+                  }),
+                wasmPlugin
+            ]
             // legalComments: "none", // If we add copyright headers to the source files, uncomment.
         };
 

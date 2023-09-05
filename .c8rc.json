@@ -1,7 +1,7 @@
 {
-    "reporter": ["lcovonly", "cobertura"],
+    "reporter": ["lcovonly", "cobertura", "html"],
     "src": "src",
     "include": ["src/**", "built/local/**"],
-    "exclude": ["**/node_modules/**"],
+    "exclude": ["../rtsc", "TypeScript/node_modules/**", "**/node_modules/**"],
     "mergeAsync": true
 }
